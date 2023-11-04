@@ -1,0 +1,567 @@
+
+import cx_Oracle
+import tkinter as tk
+from tkinter import ttk, messagebox
+import time
+from datetime import datetime
+import threading
+
+# Kết nối đến cơ sở dữ liệu Oracle
+conStr = 'system/1@localhost:1521/orcl21'
+connection = cx_Oracle.connect(conStr)
+cursor = connection.cursor()
+
+# Khai báo giá trị
+tree = None
+login_window = None
+admin_window = None
+user_window = None
+meunubar = None
+edit_machine_window = None
+current_interface = None
+
+# Hàm lấy dữ liệu từ cơ sở dữ liệu
+def fetch_machine_status():
+    cursor.execute("SELECT MA_MAY, TINH_TRANG, THOI_GIAN_KET_NOI, IP FROM TINH_TRANG_KET_NOI")
+    result = cursor.fetchall()
+    return result 
+
+# Hàm hiển thị giao diện cho admin
+def show_admin_interface():
+    global tree
+    global admin_window
+    global login_window
+    global current_interface
+    current_interface = "admin"
+    if login_window:
+        login_window.withdraw()
+    admin_window = tk.Tk()
+    admin_window.title("Giao diện Admin")
+    # Đặt kích thước và vị trí cho cửa sổ admin
+    admin_window_width = 1050
+    admin_window_height = 300
+    center_window(admin_window, admin_window_width, admin_window_height)
+
+    # Tạo menu bar
+    menubar = tk.Menu(admin_window)
+    admin_window.config(menu=menubar)
+
+    # Thêm menu "File" với mục "Đăng xuất"
+    file_menu = tk.Menu(menubar, tearoff=0)
+    menubar.add_cascade(label="File", menu=file_menu)
+    file_menu.add_command(label="Đăng xuất", command=logout_admin)
+
+    # Thêm menu "Tài khoản" với mục "Tạo Tài Khoản" và "Xóa Tài Khoản"
+    admin_menu = tk.Menu(menubar, tearoff=0)
+    menubar.add_cascade(label="Tài khoản", menu=admin_menu)
+    admin_menu.add_command(label="Tạo tài khoản", command=create_user)
+    admin_menu.add_command(label="Xóa tài khoản", command=show_account_list)
+
+    # Thêm menu "Quản lý" với mục "Thêm máy" và "Xoá máy"
+    admin_menu = tk.Menu(menubar, tearoff=0)
+    menubar.add_cascade(label="Quản lý", menu=admin_menu)
+    admin_menu.add_command(label="Thêm máy", command=add_machine)
+    admin_menu.add_command(label="Xóa máy", command=delete_machine)
+
+    # Lấy dữ liệu từ cơ sở dữ liệu
+    data = fetch_machine_status()
+
+    # Tạo Treeview để hiển thị dữ liệu ngang
+    tree = ttk.Treeview(admin_window, columns=("Máy", "Tình trạng", "Thời gian kết nối", "IP"), show="headings")
+    tree.heading("Máy", text="Máy")
+    tree.heading("Tình trạng", text="Tình trạng")
+    tree.heading("Thời gian kết nối", text="Thời gian kết nối")
+    tree.heading("IP", text="IP")
+    tree.pack()
+
+    for row in data:
+        tree.insert('', 'end', values=(row[0], row[1], row[2], row[3], row[0]))
+    
+    # Thêm sự kiện cho nút "Chi tiết máy"
+    tree.bind("<Button-3>", lambda event: show_context_menu(event, tree))
+    tree.bind("<Double-1>", lambda event: on_tree_select(event, tree))
+    refresh_button = ttk.Button(admin_window, text="Cập nhật", command=refresh_treeview)
+    refresh_button.pack()
+    admin_window.mainloop()
+
+# Hàm hiển thị chi tiết của máy
+def show_machine_details_admin(machine_name):
+    machine_details_window = tk.Tk()
+    machine_details_window.title(f"Chi tiết máy {machine_name}")
+
+    # Tạo danh sách các thông tin cần hiển thị
+    labels = ["Machine code","Processor", "RAM", "Device ID", "Product ID", "System Type", "Pen and Touch", "Edition", "Version", "Install On", "OS Build", "Experience"]
+
+    # Thêm các thông tin chi tiết của máy tính từ cơ sở dữ liệu vào đây
+    cursor.execute("SELECT * FROM CHI_TIET_MAY WHERE MA_MAY = :MA_MAY", {'MA_MAY': machine_name})
+    result = cursor.fetchone()
+    if result is None:
+        result = [None] * len(labels)
+    for idx, label in enumerate(labels):
+        ttk.Label(machine_details_window, text=f"{label}:").grid(row=idx, column=0, sticky="w")
+        entry = ttk.Entry(machine_details_window, width=50)  # Điều chỉnh chiều rộng
+        entry.grid(row=idx, column=1)
+
+        # Đặt giá trị mặc định từ kết quả truy vấn hoặc để rỗng nếu không có thông tin
+        entry.insert(0, str(result[idx]) if result[idx] is not None else "")
+
+    def save_machine_details():
+        new_values = [entry.get() for entry in machine_details_window.children.values() if isinstance(entry, ttk.Entry)
+                      ]
+        # Chuyển đổi giá trị thời gian Python thành định dạng Oracle
+        oracle_date = datetime.strptime(new_values[9], '%Y-%m-%d %H:%M:%S')    
+        # Cập nhật chi tiết máy vào cơ sở dữ liệu
+        cursor.execute("UPDATE CHI_TIET_MAY SET PROCESSOR = :processor, RAM = :ram, DEVICE_ID = :device_id, PRODUCT_ID = :product_id, SYSTEM_TYPE = :system_type, PEN_AND_TOUCH = :pen_and_touch, EDITION = :edition, VERSION = :version, INSTALL_ON = :install_on, OS_BUILD = : os_build, EXPERIENCE = :experience WHERE MA_MAY = :ma_may",
+            {'processor': new_values[1], 'ram': new_values[2], 'device_id': new_values[3], 'product_id': new_values[4], 'system_type': new_values[5], 'pen_and_touch': new_values[6], 'edition': new_values[7], 'version': new_values[8], 'install_on': oracle_date, 'os_build': new_values[10], 'experience': new_values[11], 'ma_may': machine_name})
+
+        connection.commit()
+
+        # Đóng cửa sổ chi tiết máy
+        machine_details_window.destroy()
+
+    # Tạo nút cập nhật
+    save_button = ttk.Button(machine_details_window, text="Cập nhật", command=save_machine_details)
+    save_button.grid(row=len(labels), column=0, columnspan=2)
+
+    def insert_machine_to_db():
+        new_values = [entry.get() for entry in machine_details_window.children.values() if isinstance(entry, ttk.Entry)]
+
+        # Chèn dữ liệu máy mới vào cơ sở dữ liệu
+        oracle_date = datetime.strptime(new_values[9], '%Y-%m-%d %H:%M:%S')
+        cursor.execute("INSERT INTO CHI_TIET_MAY (MA_MAY, PROCESSOR, RAM, DEVICE_ID,PRODUCT_ID,SYSTEM_TYPE,PEN_AND_TOUCH,EDITION,VERSION,INSTALL_ON,OS_BUILD,EXPERIENCE) VALUES (:ma_may, :processor, :ram, :device_id, :product_id, :system_type, :pen_and_touch, :edition, :version, :install_on, :os_build, :experience)",
+            {'ma_may': new_values[0], 'processor': new_values[1], 'ram': new_values[2], 'device_id': new_values[3], 'product_id': new_values[4], 'system_type': new_values[5], 'pen_and_touch': new_values[6], 'edition': new_values[7], 'version': new_values[8], 'install_on': oracle_date, 'os_build': new_values[10], 'experience': new_values[11]})
+
+        connection.commit()
+
+        # Đóng cửa sổ chi tiết máy
+        machine_details_window.destroy()
+
+    insert_button = ttk.Button(machine_details_window, text="Lưu chi tiết", command=insert_machine_to_db)
+    insert_button.grid(row=len(labels)+1, column=0, columnspan=2)
+
+    # Điều chỉnh độ rộng cửa sổ để hiển thị tất cả các nhãn và mục nhập
+    window_width = max(machine_details_window.winfo_reqwidth(), 400)  # 400 là chiều rộng tối thiểu
+    window_height = len(labels)* 25 + 40 # Điều chỉnh độ cao khi cần thiết
+    
+    machine_details_window.geometry(f"{window_width}x{window_height}")
+    machine_details_window.mainloop()
+
+# Hàm hiển thị giao diện cho user
+def show_user_interface():
+    global tree
+    global user_window
+    global login_window
+    global current_interface
+    current_interface = "user"
+    if login_window:
+        login_window.withdraw()
+    user_window = tk.Tk()
+    user_window.title("Giao diện người dùng")
+    # Đặt kích thước và vị trí cho cửa sổ 
+    user_window_width = 1050
+    user_window_height = 300
+    center_window(user_window, user_window_width, user_window_height)
+    
+    # Tạo menu bar
+    menubar = tk.Menu(user_window)
+    user_window.config(menu=menubar)
+
+    # Thêm menu "File" với mục "Đăng xuất"
+    file_menu = tk.Menu(menubar, tearoff=0)
+    menubar.add_cascade(label="File", menu=file_menu)
+    file_menu.add_command(label="Đăng xuất", command=logout_user)
+
+    # Lấy dữ liệu từ cơ sở dữ liệu
+    data = fetch_machine_status()
+
+    # Tạo Treeview để hiển thị dữ liệu ngang
+    tree = ttk.Treeview(user_window, columns=("Máy", "Tình trạng", "Thời gian kết nối", "IP"), show="headings")
+    tree.heading("Máy", text="Máy")
+    tree.heading("Tình trạng", text="Tình trạng")
+    tree.heading("Thời gian kết nối", text="Thời gian kết nối")
+    tree.heading("IP", text="IP")
+    tree.pack()
+
+    for row in data:
+        tree.insert('', 'end', values=(row[0], row[1], row[2], row[3], row[0]))
+    
+    # Thêm sự kiện cho nút "Chi tiết máy"
+    tree.bind("<Double-1>", lambda event: on_tree_select(event, tree))
+    user_window.mainloop()
+
+def show_machine_details_user(machine_name):
+    cursor.execute("SELECT TINH_TRANG FROM TINH_TRANG_KET_NOI WHERE MA_MAY = :MA_MAY", {'MA_MAY': machine_name})
+    result = cursor.fetchone()
+    # Thêm các thông tin chi tiết của máy tính từ cơ sở dữ liệu vào đây
+    if result:
+        status = result[0]
+        if status == "Bảo trì":
+            messagebox.showinfo("Thông báo", "Hiện tại máy đang trong trạng thái 'Bảo trì'.")
+        else:
+            # Hiển thị chi tiết máy nếu trạng thái không phải là "Bảo trì"
+            machine_details_window = tk.Tk()
+            machine_details_window.title(f"Chi tiết máy {machine_name}")
+
+            cursor.execute("SELECT * FROM CHI_TIET_MAY WHERE MA_MAY = :MA_MAY", {'MA_MAY': machine_name})
+            result = cursor.fetchone()
+            if result:
+                 for idx, label in enumerate(["Processor", "RAM", "Device ID", "Product ID", "System Type", "Pen and Touch", "Edition", "Version", "Install On", "OS Build", "Experience"]):
+                    ttk.Label(machine_details_window, text=f"{label}:").grid(row=idx, column=0, sticky="w")
+                    ttk.Label(machine_details_window, text=result[idx + 1], state='readonly').grid(row=idx, column=1)
+            else:
+                ttk.Label(machine_details_window, text="Không có thông tin chi tiết cho máy này").grid(row=0, column=0)
+            # Ađiều chỉnh độ rộng cửa sổ để hiển thị tất cả các nhãn và mục
+            window_width = max(machine_details_window.winfo_reqwidth(), 400)  # 400 là chiều rộng tối thiểu
+            window_height = 400  # Điều chỉnh độ cao khi cần thiết
+            machine_details_window.geometry(f"{window_width}x{window_height}")
+
+
+machine_update_threads = {}
+def on_tree_select(event, tree):
+    item = tree.selection()
+    if item:
+        machine_name = tree.item(item, "values")[0]
+        if current_interface == "admin":
+            show_machine_details_admin(machine_name)
+        elif current_interface == "user":
+            show_machine_details_user(machine_name)
+        
+        # Kiểm tra nếu luồng đã được tạo cho máy cụ thể
+        if machine_name not in machine_update_threads:
+            # Nếu chưa, thì tạo luồng và thêm vào từ điển
+            update_real_time_connection(machine_name)
+            machine_update_threads[machine_name] = True
+
+# Thêm một biến cờ kiểm soát luồng
+stop_update_thread = False
+
+def close_update_thread():
+    global stop_update_thread
+    stop_update_thread = True
+
+def update_real_time_connection(machine_name):
+    def update_connection():
+        while True:
+            if stop_update_thread:
+                break
+            try:
+                # Cập nhật thời gian kết nối thực cho máy cụ thể trong cơ sở dữ liệu
+                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+                cursor.execute("UPDATE TINH_TRANG_KET_NOI SET THOI_GIAN_KET_NOI = TO_TIMESTAMP(:THOI_GIAN_KET_NOI, 'YYYY-MM-DD HH24:MI:SS.FF') WHERE MA_MAY = :MA_MAY", {'THOI_GIAN_KET_NOI': current_time, 'MA_MAY': machine_name})
+                connection.commit()
+                time.sleep(10)
+            except cx_Oracle.DatabaseError as e:
+                error, = e.args
+                print("Lỗi cơ sở dữ liệu:", error.message)
+    
+    update_thread = threading.Thread(target=update_connection)
+    update_thread.start()
+
+# Hàm logout cho admin
+def logout_admin():
+    global admin_window
+    if admin_window:
+        admin_window.destroy()
+    # Hiển thị lại cửa sổ đăng nhập
+    login_window.deiconify()
+
+# Hàm logout cho user
+def logout_user():
+    global user_window
+    if user_window:
+        user_window.destroy()
+    # Hiển thị lại cửa sổ đăng nhập
+    login_window.deiconify()
+
+
+def add_machine():
+    add_machine_window = tk.Toplevel(admin_window)
+    add_machine_window.title("Thêm máy mới")
+
+    # Tạo trường nhập và nhãn cho thông tin máy
+    ttk.Label(add_machine_window, text="Mã máy:").grid(row=0, column=0)
+    machine_name_entry = ttk.Entry(add_machine_window)
+    machine_name_entry.grid(row=0, column=1)
+
+    ttk.Label(add_machine_window, text="Tình trạng:").grid(row=1, column=0)
+    status_entry = ttk.Entry(add_machine_window)
+    status_entry.grid(row=1, column=1)
+
+    ttk.Label(add_machine_window, text="Thời gian kết nối:").grid(row=2, column=0)
+    connection_time_entry = ttk.Entry(add_machine_window)
+    connection_time_entry.grid(row=2, column=1)
+
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    connection_time_entry.insert(0, current_time)
+
+    ttk.Label(add_machine_window, text="Địa chỉ IP:").grid(row=3, column=0)
+    ip_entry = ttk.Entry(add_machine_window)
+    ip_entry.grid(row=3, column=1)
+
+    def save_machine():
+        machine_name = machine_name_entry.get()
+        status = status_entry.get()
+        connection_time = connection_time_entry.get()
+        ip = ip_entry.get()
+
+        # Chèn dữ liệu máy mới vào cơ sở dữ liệu
+        cursor.execute("INSERT INTO TINH_TRANG_KET_NOI (MA_MAY, TINH_TRANG, THOI_GIAN_KET_NOI, IP) VALUES (:1, :2, TO_DATE(:3, 'YYYY-MM-DD HH24:MI:SS'), :4)",
+               (machine_name, status, connection_time, ip))
+        connection.commit()
+
+        # Đóng cửa sổ thêm máy
+        add_machine_window.destroy()
+
+        # Làm mới Treeview với dữ liệu được cập nhật
+        refresh_treeview()
+
+    # Tạo nút "Lưu"
+    save_button = ttk.Button(add_machine_window, text="Lưu", command=save_machine)
+    save_button.grid(row=4, column=0, columnspan=2)
+
+# Hàm xóa máy
+def delete_machine():
+    selected_item = tree.selection()
+    if selected_item:
+        machine_name = tree.item(selected_item, "values")[0]
+        response = messagebox.askyesno("Xác nhận", f"Xóa máy {machine_name}?")
+        if response:
+            cursor.execute("DELETE FROM TINH_TRANG_KET_NOI WHERE MA_MAY = :machine_name", {'machine_name': machine_name})
+            connection.commit()
+            refresh_treeview()
+
+# Hàm tạo tài khoản
+def create_user():
+    create_user_window = tk.Toplevel(admin_window)
+    create_user_window.title("Tạo tài khoản")
+
+    create_user_window_width = 250
+    create_user_window_height = 100
+    center_window(create_user_window, create_user_window_width, create_user_window_height)
+
+    ttk.Label(create_user_window, text="Tên người dùng:").grid(row=0, column=0)
+    username_entry = ttk.Entry(create_user_window)
+    username_entry.grid(row=0, column=1)
+
+    ttk.Label(create_user_window, text="Mật khẩu:").grid(row=1, column=0)
+    password_entry = ttk.Entry(create_user_window, show="*")
+    password_entry.grid(row=1, column=1)
+
+    ttk.Label(create_user_window, text="Vai trò:").grid(row=2, column=0)
+    type_entry = ttk.Entry(create_user_window)
+    type_entry.grid(row=2, column=1)
+
+    def save_user():
+        new_username = username_entry.get()
+        new_password = password_entry.get()
+        new_type = type_entry.get()
+
+        # Thêm tài khoản mới vào cơ sở dữ liệu (lưu ý: bạn nên mã hóa mật khẩu trước khi lưu)
+        cursor.execute("INSERT INTO USERS (USERNAME, PASSWORD, USER_TYPE) VALUES (:1, :2, :3)", (new_username, new_password, new_type))
+        connection.commit()
+        create_user_window.destroy()
+
+    save_button = ttk.Button(create_user_window, text="Tạo tài khoản", command=save_user)
+    save_button.grid(row=3, column=0, columnspan=2)
+
+# Hàm chỉnh sửa máy
+def edit_machine(machine_name):
+    global edit_machine_window
+    edit_machine_window = tk.Toplevel(admin_window)
+    edit_machine_window.title(f"Chỉnh sửa máy {machine_name}")
+
+    # Tạo các trường chỉnh sửa
+    ttk.Label(edit_machine_window, text="Tình trạng mới:").grid(row=0, column=0)
+    new_status_var = tk.StringVar()
+    new_status_var.set("Hoạt động")
+    new_status_optionmenu = ttk.OptionMenu(edit_machine_window, new_status_var, "Hoạt động", "Bảo trì")
+    new_status_entry = ttk.Entry(edit_machine_window)
+    new_status_entry.grid(row=0, column=1)
+
+    # Tạo hàm để cập nhật thông tin máy
+    def update_machine_info():
+        new_status = new_status_entry.get()
+        # Thực hiện cập nhật thông tin vào cơ sở dữ liệu
+        cursor.execute("UPDATE TINH_TRANG_KET_NOI SET TINH_TRANG = :1 WHERE MA_MAY = :3",(new_status, machine_name))
+        connection.commit()
+
+        # Đóng cửa sổ chỉnh sửa
+        edit_machine_window.destroy()
+
+        # Cập nhật lại giao diện
+        refresh_treeview()
+
+    # Tạo nút "Lưu" để cập nhật thông tin
+    save_button = ttk.Button(edit_machine_window, text="Lưu", command=update_machine_info)
+    save_button.grid(row=2, column=0, columnspan=2)
+
+# Hàm hiển thị danh sách tài khoản để chọn tài khoản cần xóa
+def show_account_list():
+    account_list_window = tk.Toplevel(admin_window)
+    account_list_window.title("Danh sách tài khoản")
+
+    # Tạo Treeview để hiển thị danh sách tài khoản
+    account_tree = ttk.Treeview(account_list_window, columns=("Tên người dùng", "Mật khẩu", "Vai trò"), show="headings")
+    account_tree.heading("Tên người dùng", text="Tên người dùng")
+    account_tree.heading("Mật khẩu", text="Mật khẩu")
+    account_tree.heading("Vai trò", text="Vai trò")
+    account_tree.pack()
+
+    # Lấy danh sách tài khoản từ cơ sở dữ liệu và hiển thị trên Treeview
+    cursor.execute("SELECT * FROM USERS")
+    accounts = cursor.fetchall()
+    for account in accounts:
+        account_tree.insert('', 'end', values=(account[0], account[1], account[2]))
+
+    def delete_selected_account():
+        selected_item = account_tree.selection()
+        if selected_item:
+            username_to_delete = account_tree.item(selected_item, "values")[0]
+
+            # Thực hiện xóa tài khoản người dùng từ cơ sở dữ liệu
+            cursor.execute("DELETE FROM USERS WHERE USERNAME = :1", (username_to_delete,))
+            connection.commit()
+
+            # Xóa tài khoản đã chọn từ danh sách hiển thị
+            account_tree.delete(selected_item)
+
+    delete_button = ttk.Button(account_list_window, text="Xóa tài khoản đã chọn", command=delete_selected_account)
+    delete_button.pack()
+
+# Hàm tạo mục để sửa thông tin máy và chuyển đổi tình trạng của máy
+def show_context_menu(event, tree):
+    item = tree.selection()
+    if item:
+        machine_name = tree.item(item, "values")[0]
+        context_menu = tk.Menu(tree, tearoff=0)
+        context_menu.add_command(label="Sửa", command=lambda machine=machine_name: set_status_edit(machine))
+        context_menu.add_command(label="Chuyển sang Bảo trì", command=lambda machine=machine_name: set_status_off(machine))
+        context_menu.add_command(label="Chuyển sang Hoạt động", command=lambda machine=machine_name: set_status_on(machine))
+        context_menu.post(event.x_root, event.y_root)
+
+# Hàm sửa thông tin máy
+def set_status_edit(machine_name):
+    machine_details_window = tk.Tk()
+    machine_details_window.title(f"Chỉnh sửa máy {machine_name}")
+
+    ttk.Label(machine_details_window, text="Tên máy:").grid(row=0, column=0)
+    machine_name_entry = ttk.Entry(machine_details_window)
+    machine_name_entry.grid(row=0, column=1)
+
+    ttk.Label(machine_details_window, text="IP:").grid(row=1, column=0)
+    ip_entry = ttk.Entry(machine_details_window)
+    ip_entry.grid(row=1, column=1)
+
+    cursor.execute("SELECT MA_MAY, IP FROM TINH_TRANG_KET_NOI WHERE MA_MAY = :MA_MAY", {'MA_MAY': machine_name})
+    result = cursor.fetchone()
+    if result:
+        machine_name_entry.insert(0, result[0])
+        ip_entry.insert(0, result[1])
+
+    # Hàm lưu thông tin sau khi chỉnh sửa
+    def save_machine_details():
+        new_machine_name = machine_name_entry.get()
+        new_ip = ip_entry.get()
+
+        # Cập nhật tên máy và IP trong cơ sở dữ liệu
+        cursor.execute("UPDATE TINH_TRANG_KET_NOI SET MA_MAY = :new_machine_name, IP = :new_ip WHERE MA_MAY = :machine_name", {'new_machine_name': new_machine_name, 'new_ip': new_ip, 'machine_name': machine_name})
+        connection.commit()
+
+        # Đóng cửa sổ chỉnh sửa máy
+        machine_details_window.destroy()
+
+        # Cập nhật lại giao diện
+        refresh_treeview()
+
+    save_button = ttk.Button(machine_details_window, text="Lưu", command=save_machine_details)
+    save_button.grid(row=2, column=0, columnspan=2)
+
+# Hàm chuyển tình trạng máy "Hoạt động" -> "Bảo trì"
+def set_status_off(machine_name):
+    # Thay đổi trạng thái của máy tính sang "Bảo trì" trong cơ sở dữ liệu
+    cursor.execute("UPDATE TINH_TRANG_KET_NOI SET TINH_TRANG = 'Bảo trì' WHERE MA_MAY = :machine_name", {'machine_name': machine_name})
+    connection.commit()
+    # Cập nhật lại giao diện
+    refresh_treeview()
+
+# Hàm chuyển tình trạng máy "Bảo trì" -> "Hoạt động"
+def set_status_on(machine_name):
+    # Thay đổi trạng thái của máy tính sang "Bảo trì" trong cơ sở dữ liệu
+    cursor.execute("UPDATE TINH_TRANG_KET_NOI SET TINH_TRANG = 'Hoạt động' WHERE MA_MAY = :machine_name", {'machine_name': machine_name})
+    connection.commit()
+    # Cập nhật lại giao diện
+    refresh_treeview()
+
+# Hàm làm mới dữ liệu 
+def refresh_treeview():
+    for item in tree.get_children():
+        tree.delete(item)
+    data = fetch_machine_status()
+    for row in data:
+        tree.insert('', 'end', values=(row[0], row[1], row[2], row[3], row[0]))
+
+# Hàm điều chỉnh hiển thị giao diện ở giữa cửa sổ màn hình
+def center_window(window, width, height):
+    screen_width = window.winfo_screenwidth()
+    screen_height = window.winfo_screenheight()
+    x = (screen_width - width) // 2
+    y = (screen_height - height) // 2
+    window.geometry(f"{width}x{height}+{x}+{y}")
+
+# Hàm kiểm tra tài khoản và mật khẩu người dùng
+def check_user_credentials(username, password):
+    cursor.execute("SELECT PASSWORD, USER_TYPE FROM USERS WHERE USERNAME = :1", (username,))
+    result = cursor.fetchone()
+    if result:
+        stored_password = result[0]  # Lấy mật khẩu đã được lưu trong cơ sở dữ liệu
+        user_type = result[1]  # Lấy loại tài khoản (ví dụ: "admin" hoặc "user")
+        if password == stored_password:
+            return user_type  # Trả về loại tài khoản
+    return None  # Trả về None nếu đăng nhập không thành công
+
+# Hàm kiểm tra đăng nhập
+def login():
+    username = username_entry.get()
+    password = password_entry.get()
+
+    user_type = check_user_credentials(username, password)
+    
+    if user_type:
+        messagebox.showinfo("Thông báo", "Đăng nhập thành công!")
+        if user_type == 'admin':
+            show_admin_interface()
+        elif user_type == 'user':
+            show_user_interface()
+    else:
+        messagebox.showerror("Lỗi", "Đăng nhập thất bại. Vui lòng kiểm tra tên người dùng và mật khẩu.")
+
+# Tạo cửa sổ đăng nhập
+login_window = tk.Tk()
+login_window.title("Đăng nhập")
+
+# Đặt kích thước mặc định cho cửa sổ đăng nhập
+login_window_width = 400
+login_window_height = 200
+center_window(login_window, login_window_width, login_window_height)
+
+# Tạo hộp chứa (Frame) cho giao diện đăng nhập
+input_frame = tk.Frame(login_window, padx=20, pady=10)
+input_frame.pack()
+
+# Tạo các thành phần giao diện và đặt căn giữa
+username_label = tk.Label(input_frame, text="Tên người dùng:")
+password_label = tk.Label(input_frame, text="Mật khẩu:")
+username_entry = tk.Entry(input_frame)
+password_entry = tk.Entry(input_frame, show="*")  # Hiển thị dấu * thay vì mật khẩu thật
+login_button = tk.Button(input_frame, text="Đăng nhập", command=login)
+
+# Sử dụng grid để cố định kích thước và căn giữa
+username_label.grid(row=0, column=0, padx=10, pady=10, sticky="e")
+password_label.grid(row=1, column=0, padx=10, pady=10, sticky="e")
+username_entry.grid(row=0, column=1, padx=10, pady=10)
+password_entry.grid(row=1, column=1, padx=10, pady=10)
+login_button.grid(row=2, columnspan=2, pady=20)
+
+login_window.mainloop()
+app.py
+Đang hiển thị app.py.
